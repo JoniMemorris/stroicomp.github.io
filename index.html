@@ -322,31 +322,7 @@
             </div>
             <button class="login-btn login-btn-primary" onclick="doLogin()">Войти</button>
         </div>
-        <div id="setup-hint" style="display:none;margin-top:20px;padding:16px;background:var(--primary-light);border-radius:var(--radius-sm);text-align:left">
-            <div style="font-size:14px;font-weight:600;color:var(--primary);margin-bottom:4px">🔧 Первичная настройка</div>
-            <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">Создайте аккаунт администратора для начала работы</div>
-            <button type="button" onclick="generateCredentials()" style="width:100%;padding:8px;border:1px solid var(--primary);border-radius:var(--radius-sm);background:var(--white);color:var(--primary);font-size:13px;font-weight:600;cursor:pointer;margin-bottom:12px">🎲 Сгенерировать логин и пароль</button>
-            <div class="form-group" style="margin-top:12px">
-                <label class="form-label">Имя администратора</label>
-                <input type="text" class="form-control" id="setup-name" placeholder="ФИО">
-            </div>
-            <div class="form-group" style="margin-top:8px">
-                <label class="form-label">Логин</label>
-                <input type="text" class="form-control" id="setup-username" placeholder="Логин (латиница, цифры, символы)">
-            </div>
-            <div class="form-group" style="margin-top:8px">
-                <label class="form-label">Пароль</label>
-                <input type="text" class="form-control" id="setup-password" placeholder="Пароль (используйте разные символы: A-z, 0-9, #@$!)" style="font-family:monospace;letter-spacing:1px">
-            </div>
-            <button class="login-btn login-btn-primary" style="margin-top:12px" onclick="doSetup()">Создать аккаунт администратора</button>
-            <div id="generated-creds" style="display:none;margin-top:14px;padding:12px;background:#fef7e0;border:1px solid #f9ab00;border-radius:8px">
-                <div style="font-size:12px;font-weight:600;color:#92400e;margin-bottom:6px">⚠️ Сохраните эти данные!</div>
-                <div style="font-family:monospace;font-size:13px;line-height:1.8">
-                    <div><strong>Логин:</strong> <span id="gen-cred-login"></span> <button onclick="copyText('gen-cred-login')" style="border:none;background:#f9ab00;color:#fff;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px">📋</button></div>
-                    <div><strong>Пароль:</strong> <span id="gen-cred-pass"></span> <button onclick="copyText('gen-cred-pass')" style="border:none;background:#f9ab00;color:#fff;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px">📋</button></div>
-                </div>
-            </div>
-        </div>
+
     </div>
 </div>
 
@@ -515,6 +491,11 @@ const UNITS=['шт','м','м²','м³','кг','т','л','упак','компл',
 function load(){
     try{users=JSON.parse(localStorage.getItem(USERS_KEY)||'[]');reports=JSON.parse(localStorage.getItem(REPORTS_KEY)||'[]');requests=JSON.parse(localStorage.getItem(REQUESTS_KEY)||'[]');
     const s=localStorage.getItem(SESSION_KEY);if(s){const uid=JSON.parse(s);currentUser=users.find(u=>u.id===uid)||null}}catch(e){users=[];reports=[];requests=[];currentUser=null}
+    // Авто-создание админа, если пользователей нет
+    if(users.length===0){
+        const adm={id:genId(),name:'Администратор',login:'admin',password:hashPass('admin'),rank:'admin',mentorId:null,createdAt:Date.now()};
+        users.push(adm);saveUsers();
+    }
 }
 function saveUsers(){localStorage.setItem(USERS_KEY,JSON.stringify(users))}
 function saveReports(){try{localStorage.setItem(REPORTS_KEY,JSON.stringify(reports))}catch(e){showToast('Хранилище переполнено','error')}}
@@ -526,31 +507,9 @@ function genId(){return Date.now().toString(36)+Math.random().toString(36).subst
 // ========================================================
 function initAuth(){
     load();
-    if(users.length===0){
-        document.getElementById('login-page').style.display='flex';
-        document.getElementById('app-page').style.display='none';
-        document.getElementById('setup-hint').style.display='block';
-        document.querySelector('.login-form').style.display='none';
-    } else if(!currentUser){
-        document.getElementById('login-page').style.display='flex';
-        document.getElementById('app-page').style.display='none';
-    } else {
-        enterApp();
-    }
-}
-
-function doSetup(){
-    const name=document.getElementById('setup-name').value.trim();
-    const username=document.getElementById('setup-username').value.trim().toLowerCase();
-    const password=document.getElementById('setup-password').value;
-    if(!name||!username||password.length<4){showLoginError('Заполните все поля. Пароль минимум 4 символа.');return}
-    if(users.find(u=>u.login===username)){showLoginError('Логин уже занят.');return}
-    const user={id:genId(),name,login:username,password:hashPass(password),rank:'admin',mentorId:null,createdAt:Date.now()};
-    users.push(user);saveUsers();
-    currentUser=user;
-    localStorage.setItem(SESSION_KEY,JSON.stringify(user.id));
-    enterApp();
-    showToast('Аккаунт администратора создан ✓','success');
+    document.getElementById('login-page').style.display='flex';
+    document.getElementById('app-page').style.display='none';
+    if(currentUser){enterApp()}
 }
 
 function doLogin(){
@@ -571,44 +530,10 @@ function doLogout(){
     document.getElementById('login-username').value='';
     document.getElementById('login-password').value='';
     document.getElementById('login-error').classList.remove('show');
-    document.querySelector('.login-form').style.display='block';
-    document.getElementById('setup-hint').style.display='none';
 }
 
 function showLoginError(msg){const el=document.getElementById('login-error');el.textContent=msg;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),3000)}
 function hashPass(p){let h=0;for(let i=0;i<p.length;i++){h=((h<<5)-h)+p.charCodeAt(i);h|=0}return h.toString(36)}
-
-function generateCredentials(){
-    const chars='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz';
-    const digits='23456789';
-    const specials='#@$!&%*+=-';
-    function randFrom(s){return s[Math.floor(Math.random()*s.length)]}
-    function randStr(s,len){let r='';for(let i=0;i<len;i++)r+=randFrom(s);return r}
-
-    const prefixes=['adm','sys','chief','dir','root','head','boss','main','core','lead'];
-    const prefix=prefixes[Math.floor(Math.random()*prefixes.length)];
-    const login=prefix+'_'+randStr(digits,3)+randFrom(specials);
-
-    let pass=randStr(chars,3)+randStr(digits,3)+randStr(specials,2)+randStr(chars+digits,2);
-    pass=pass.split('').sort(()=>Math.random()-0.5).join('');
-
-    document.getElementById('setup-username').value=login;
-    document.getElementById('setup-password').value=pass;
-
-    // Show in credentials display
-    document.getElementById('gen-cred-login').textContent=login;
-    document.getElementById('gen-cred-pass').textContent=pass;
-    document.getElementById('generated-creds').style.display='block';
-}
-
-function copyText(elId){
-    const text=document.getElementById(elId).textContent;
-    navigator.clipboard.writeText(text).then(()=>showToast('Скопировано ✓','success')).catch(()=>{
-        // Fallback
-        const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();
-        showToast('Скопировано ✓','success');
-    });
-}
 
 // ========================================================
 // APP ENTRY
@@ -1202,14 +1127,10 @@ function renderUsersPage(){
             <div class="form-card-title"><span class="icon">👤</span>Новый аккаунт</div>
             <div class="form-row">
                 <div class="form-group"><label class="form-label">ФИО <span class="req">*</span></label><input type="text" class="form-control" id="nu-name" placeholder="ФИО сотрудника"></div>
-                <div class="form-group"><label class="form-label">Логин <span class="req">*</span></label>
-                    <div style="display:flex;gap:6px"><input type="text" class="form-control" id="nu-login" placeholder="Логин (латиница, цифры, символы)" style="flex:1"><button type="button" class="btn btn-secondary btn-sm" onclick="genUserLogin()" title="Сгенерировать логин">🎲</button></div>
-                </div>
+                <div class="form-group"><label class="form-label">Логин <span class="req">*</span></label><input type="text" class="form-control" id="nu-login" placeholder="Логин"></div>
             </div>
             <div class="form-row">
-                <div class="form-group"><label class="form-label">Пароль <span class="req">*</span></label>
-                    <div style="display:flex;gap:6px"><input type="text" class="form-control" id="nu-pass" placeholder="Пароль" style="flex:1;font-family:monospace;letter-spacing:1px"><button type="button" class="btn btn-secondary btn-sm" onclick="genUserPass()" title="Сгенерировать пароль">🔑</button></div>
-                </div>
+                <div class="form-group"><label class="form-label">Пароль <span class="req">*</span></label><input type="password" class="form-control" id="nu-pass" placeholder="Минимум 4 символа"></div>
                 <div class="form-group"><label class="form-label">Ранг <span class="req">*</span></label><select class="form-control" id="nu-rank" onchange="toggleMentorSelect()"><option value="foreman">👷 Прораб</option><option value="mentor">⭐ Наставник</option><option value="admin">👑 Администратор</option></select></div>
             </div>
             <div class="form-row single" id="mentor-select-row" style="display:none">
@@ -1285,29 +1206,6 @@ function showCreateUser(){
     toggleMentorSelect();
 }
 
-function genUserLogin(){
-    const chars='abcdefghjkmnpqrstuvwxyz';
-    const digits='23456789';
-    const specials='._-';
-    function r(s){return s[Math.floor(Math.random()*s.length)]}
-    function rs(s,n){let o='';for(let i=0;i<n;i++)o+=r(s);return o}
-    const prefixes=['user','worker','staff','emp','op','tech','mech','elec','eng'];
-    const prefix=prefixes[Math.floor(Math.random()*prefixes.length)];
-    const login=prefix+rs(digits,2)+r(specials)+rs(digits,2);
-    document.getElementById('nu-login').value=login;
-}
-
-function genUserPass(){
-    const chars='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz';
-    const digits='23456789';
-    const specials='#@$!&%*+=';
-    function r(s){return s[Math.floor(Math.random()*s.length)]}
-    function rs(s,n){let o='';for(let i=0;i<n;i++)o+=r(s);return o}
-    let pass=rs(chars,3)+rs(digits,3)+rs(specials,2)+rs(chars+digits,2);
-    pass=pass.split('').sort(()=>Math.random()-0.5).join('');
-    document.getElementById('nu-pass').value=pass;
-}
-
 function toggleMentorSelect(){
     const rank=document.getElementById('nu-rank').value;
     document.getElementById('mentor-select-row').style.display=rank==='foreman'?'flex':'none';
@@ -1358,16 +1256,7 @@ function showChangeMentor(userId){
 
 function resetPassword(userId){
     const u=users.find(x=>x.id===userId);if(!u)return;
-    // Generate new password with special characters
-    const chars='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz';
-    const digits='23456789';
-    const specials='#@$!&%*+=';
-    function r(s){return s[Math.floor(Math.random()*s.length)]}
-    function rs(s,n){let o='';for(let i=0;i<n;i++)o+=r(s);return o}
-    let genPass=rs(chars,3)+rs(digits,3)+rs(specials,2)+rs(chars+digits,2);
-    genPass=genPass.split('').sort(()=>Math.random()-0.5).join('');
-
-    const newPass=prompt(`Новый пароль для «${u.name}»:\n\n(Нажмите ОК для использования сгенерированного, или введите свой)`,genPass);
+    const newPass=prompt(`Новый пароль для «${u.name}» (мин. 4 символа):`);
     if(!newPass||newPass.length<4){showToast('Пароль мин. 4 символа','error');return}
     u.password=hashPass(newPass);
     saveUsers();showToast('Пароль изменён ✓','success');
@@ -1434,5 +1323,5 @@ document.getElementById('login-username')?.addEventListener('keydown',e=>{if(e.k
 // Init
 initAuth();
 </script>
-<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a1bc286edf8cf27c',t:'MTc4NDE1NDA2Mw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a1bc31cf896ba14c',t:'MTc4NDE1NDQ0Nw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
