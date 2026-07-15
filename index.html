@@ -310,6 +310,7 @@
         <div class="login-logo">🏗</div>
         <div class="login-title">СтройОтчёт</div>
         <div class="login-subtitle">Войдите в систему для работы</div>
+        <div id="config-warning" style="display:none;background:var(--warning-light);color:#92400e;font-size:13px;padding:10px 14px;border-radius:8px;margin-bottom:16px;text-align:left">⚠️ Подключение к Supabase не настроено. Откройте файл в редакторе и укажите <b>SUPABASE_URL</b> и <b>SUPABASE_ANON_KEY</b> в начале скрипта (см. README-SUPABASE.md).</div>
         <div class="login-error" id="login-error"></div>
         <div class="login-form">
             <div class="form-group">
@@ -321,6 +322,15 @@
                 <input type="password" class="form-control" id="login-password" placeholder="Ваш пароль" autocomplete="current-password">
             </div>
             <button class="login-btn login-btn-primary" onclick="doLogin()">Войти</button>
+        </div>
+        <div style="margin-top:18px">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="toggleBootstrap()">⚙️ Первый запуск: создать администратора</button>
+        </div>
+        <div id="bootstrap-form" style="display:none;margin-top:14px;text-align:left">
+            <div class="form-group"><label class="form-label">Имя администратора</label><input type="text" class="form-control" id="bs-name" placeholder="ФИО"></div>
+            <div class="form-group"><label class="form-label">Логин</label><input type="text" class="form-control" id="bs-login" placeholder="admin"></div>
+            <div class="form-group"><label class="form-label">Пароль</label><input type="password" class="form-control" id="bs-pass" placeholder="Минимум 6 символов"></div>
+            <button type="button" class="login-btn login-btn-primary" onclick="bootstrapAdmin()">Создать и войти</button>
         </div>
 
     </div>
@@ -474,57 +484,103 @@
 <!-- Toasts -->
 <div class="toast-container" id="toast-container"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 // ========================================================
-// DATA LAYER
+// НАСТРОЙКА ПОДКЛЮЧЕНИЯ К SUPABASE
+// 1) Зарегистрируйтесь на https://supabase.com и создайте проект
+// 2) Выполните setup-supabase.sql в SQL Editor
+// 3) Вставьте сюда Project URL и anon public key
+//    (Dashboard → Project Settings → API)
 // ========================================================
-const USERS_KEY='so_users', SESSION_KEY='so_session', REPORTS_KEY='so_reports', REQUESTS_KEY='so_requests';
+const SUPABASE_URL='https://ujtoklyynaxhxejjxmbq.supabase.co/rest/v1/';
+const SUPABASE_ANON_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVqdG9rbHl5bmF4aHhlamp4bWJxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxNDUwMTYsImV4cCI6MjA5OTcyMTAxNn0.P9J2dRLTrbe1Ib-iO8vqo6GMqGWdm8CAyyy1KqPX4Nk';
+// Псевдо-домен для внутренних email-аккаунтов (логин "admin" -> admin@so.app)
+const AUTH_DOMAIN='so.app';
+
+const SUPABASE_OK=!SUPABASE_URL.includes('PROJECT_REF')&&!SUPABASE_ANON_KEY.includes('PASTE');
+let sb=null;
+if(SUPABASE_OK&&window.supabase)sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY);
+
+// ========================================================
+// STATE
+// ========================================================
 let users=[], currentUser=null, reports=[], requests=[];
-let currentMediaFiles=[], currentReqItems=[];
+let currentMediaFiles=[], currentReqItems=[], originalMediaPaths=[];
 let confirmCb=null, reqStatusFilter='all', rptStatusFilter='all';
+let currentPage='dashboard', realtimeSubscribed=false, refreshTimer=null;
 
 const RANKS={admin:{name:'Администратор',class:'rank-admin',icon:'👑',avatar:'admin'},mentor:{name:'Наставник',class:'rank-mentor',icon:'⭐',avatar:'mentor'},foreman:{name:'Прораб',class:'rank-foreman',icon:'👷',avatar:'foreman'}};
 const RPT_STATUSES={draft:{name:'Черновик',class:'rstatus-submitted',icon:'📝'},submitted:{name:'Отправлен',class:'rstatus-submitted',icon:'📤'},reviewing:{name:'На проверке',class:'rstatus-reviewing',icon:'🔍'},approved:{name:'Утверждён',class:'rstatus-approved',icon:'✅'},returned:{name:'Возвращён',class:'rstatus-returned',icon:'↩️'}};
 const REQ_STATUSES={new:{name:'Новая',class:'status-new',icon:'🔵'},processing:{name:'В обработке',class:'status-processing',icon:'🟡'},delivered:{name:'Доставлено',class:'status-delivered',icon:'🟢'},rejected:{name:'Отклонено',class:'status-rejected',icon:'🔴'}};
 const UNITS=['шт','м','м²','м³','кг','т','л','упак','компл','пог.м'];
 
-function load(){
-    try{users=JSON.parse(localStorage.getItem(USERS_KEY)||'[]');reports=JSON.parse(localStorage.getItem(REPORTS_KEY)||'[]');requests=JSON.parse(localStorage.getItem(REQUESTS_KEY)||'[]');
-    const s=localStorage.getItem(SESSION_KEY);if(s){const uid=JSON.parse(s);currentUser=users.find(u=>u.id===uid)||null}}catch(e){users=[];reports=[];requests=[];currentUser=null}
-    // Авто-создание админа, если пользователей нет
-    if(users.length===0){
-        const adm={id:genId(),name:'Администратор',login:'admin',password:hashPass('admin'),rank:'admin',mentorId:null,createdAt:Date.now()};
-        users.push(adm);saveUsers();
-    }
+// ========================================================
+// DATA LAYER (Supabase)
+// ========================================================
+function rowToProfile(r){return{id:r.id,name:r.name,login:r.login,rank:r.rank,mentorId:r.mentor_id||null,createdAt:r.created_at?Date.parse(r.created_at):Date.now()}}
+function rowToReport(r){return{id:r.id,date:r.date,department:r.department,building:r.building,workshop:r.workshop||'',workType:r.work_type,volume:r.volume,foreman:getUserName(r.author_id),authorId:r.author_id,status:r.status,media:Array.isArray(r.media)?r.media:[],reviewHistory:Array.isArray(r.review_history)?r.review_history:[],createdAt:r.created_at?Date.parse(r.created_at):Date.now(),updatedAt:r.updated_at?Date.parse(r.updated_at):Date.now()}}
+function rowToRequest(r){return{id:r.id,date:r.date,deliveryDate:r.delivery_date||'',department:r.department,building:r.building,workshop:r.workshop||'',foreman:getUserName(r.author_id),authorId:r.author_id,comment:r.comment||'',items:Array.isArray(r.items)?r.items:[],status:r.status,createdAt:r.created_at?Date.parse(r.created_at):Date.now(),updatedAt:r.updated_at?Date.parse(r.updated_at):Date.now(),processedAt:r.processed_at?Date.parse(r.processed_at):null,deliveredAt:r.delivered_at?Date.parse(r.delivered_at):null}}
+
+async function fetchAll(){
+    const[p,r,q]=await Promise.all([
+        sb.from('profiles').select('*').order('created_at'),
+        sb.from('reports').select('*').order('date',{ascending:false}),
+        sb.from('requests').select('*').order('date',{ascending:false})
+    ]);
+    if(p.error)throw new Error(p.error.message);
+    if(r.error)throw new Error(r.error.message);
+    if(q.error)throw new Error(q.error.message);
+    users=(p.data||[]).map(rowToProfile);
+    reports=(r.data||[]).map(rowToReport);
+    requests=(q.data||[]).map(rowToRequest);
 }
-function saveUsers(){localStorage.setItem(USERS_KEY,JSON.stringify(users))}
-function saveReports(){try{localStorage.setItem(REPORTS_KEY,JSON.stringify(reports))}catch(e){showToast('Хранилище переполнено','error')}}
-function saveRequests(){try{localStorage.setItem(REQUESTS_KEY,JSON.stringify(requests))}catch(e){showToast('Хранилище переполнено','error')}}
+
+function dataUrlToBlob(dataUrl,type){
+    const parts=dataUrl.split(',');
+    const bin=atob(parts[1]);
+    const arr=new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
+    return new Blob([arr],{type:type||'application/octet-stream'});
+}
+
 function genId(){return Date.now().toString(36)+Math.random().toString(36).substr(2,6)}
 
 // ========================================================
 // AUTH
 // ========================================================
-function initAuth(){
-    load();
+async function initApp(){
+    if(!SUPABASE_OK){
+        document.getElementById('config-warning').style.display='block';
+        return;
+    }
+    let session=null;
+    try{const {data}=await sb.auth.getSession();session=data?.session||null}catch(e){}
+    if(session){
+        const {data:prof}=await sb.from('profiles').select('*').eq('id',session.user.id).single();
+        if(prof){currentUser=rowToProfile(prof);await enterApp();return}
+        await sb.auth.signOut();
+    }
     document.getElementById('login-page').style.display='flex';
     document.getElementById('app-page').style.display='none';
-    if(currentUser){enterApp()}
 }
 
-function doLogin(){
+async function doLogin(){
+    if(!sb){showLoginError('Supabase не настроен');return}
     const username=document.getElementById('login-username').value.trim().toLowerCase();
     const password=document.getElementById('login-password').value;
-    const user=users.find(u=>u.login===username&&u.password===hashPass(password));
-    if(!user){showLoginError('Неверный логин или пароль');return}
-    currentUser=user;
-    localStorage.setItem(SESSION_KEY,JSON.stringify(user.id));
-    enterApp();
+    if(!username||!password){showLoginError('Введите логин и пароль');return}
+    const {data,error}=await sb.auth.signInWithPassword({email:username+'@'+AUTH_DOMAIN,password});
+    if(error){showLoginError('Неверный логин или пароль');return}
+    const {data:prof,error:pe}=await sb.from('profiles').select('*').eq('id',data.user.id).single();
+    if(pe||!prof){await sb.auth.signOut();showLoginError('Профиль не найден. Обратитесь к администратору.');return}
+    currentUser=rowToProfile(prof);
+    await enterApp();
 }
 
-function doLogout(){
+async function doLogout(){
+    try{await sb.auth.signOut()}catch(e){}
     currentUser=null;
-    localStorage.removeItem(SESSION_KEY);
     document.getElementById('app-page').style.display='none';
     document.getElementById('login-page').style.display='flex';
     document.getElementById('login-username').value='';
@@ -532,20 +588,45 @@ function doLogout(){
     document.getElementById('login-error').classList.remove('show');
 }
 
-function showLoginError(msg){const el=document.getElementById('login-error');el.textContent=msg;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),3000)}
-function hashPass(p){let h=0;for(let i=0;i<p.length;i++){h=((h<<5)-h)+p.charCodeAt(i);h|=0}return h.toString(36)}
+function showLoginError(msg){const el=document.getElementById('login-error');el.textContent=msg;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),4000)}
+
+// Первый запуск: создание первого администратора
+function toggleBootstrap(){const f=document.getElementById('bootstrap-form');f.style.display=f.style.display==='none'?'block':'none'}
+async function bootstrapAdmin(){
+    if(!sb){showLoginError('Supabase не настроен');return}
+    const name=document.getElementById('bs-name').value.trim();
+    const login=document.getElementById('bs-login').value.trim().toLowerCase();
+    const pass=document.getElementById('bs-pass').value;
+    if(!name||!/^[a-z0-9._-]{3,}$/.test(login)||pass.length<6){showLoginError('Заполните поля. Логин: мин. 3 символа (a-z, 0-9, . _ -), пароль мин. 6');return}
+    const {data,error}=await sb.auth.signUp({email:login+'@'+AUTH_DOMAIN,password:pass});
+    if(error){showLoginError('Ошибка: '+error.message);return}
+    if(!data.session){showLoginError('Включено подтверждение email. Отключите "Confirm email" в настройках Supabase Auth и повторите.');return}
+    const uid=data.user.id;
+    const {error:pe}=await sb.from('profiles').insert({id:uid,name,login,rank:'admin',mentor_id:null});
+    if(pe){
+        if(String(pe.message).toLowerCase().includes('row-level security')){showLoginError('Администратор уже существует. Просто войдите.');}
+        else showLoginError('Ошибка: '+pe.message);
+        return;
+    }
+    currentUser={id:uid,name,login,rank:'admin',mentorId:null,createdAt:Date.now()};
+    showToast('Администратор создан ✓','success');
+    await enterApp();
+}
 
 // ========================================================
 // APP ENTRY
 // ========================================================
-function enterApp(){
+async function enterApp(){
     document.getElementById('login-page').style.display='none';
     document.getElementById('app-page').style.display='block';
+    try{await fetchAll()}catch(e){showToast('Ошибка загрузки данных: '+e.message,'error')}
     buildNav();
+    subscribeRealtime();
     navigate('dashboard');
 }
 
 function can(page){
+    if(!currentUser)return false;
     const r=currentUser.rank;
     if(r==='admin')return true;
     if(r==='mentor')return page!=='users';
@@ -589,6 +670,7 @@ function getNotifCount(page){
 
 function navigate(page){
     if(!can(page)){showToast('Нет доступа','error');return}
+    currentPage=page;
     document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
     document.getElementById('page-'+page).classList.add('active');
     document.querySelectorAll('.nav-tab').forEach(t=>{t.classList.toggle('active',t.dataset.page===page)});
@@ -601,6 +683,44 @@ function navigate(page){
     if(page==='new-report'&&!document.getElementById('report-id').value)resetReportForm();
     if(page==='new-request'&&!document.getElementById('req-id').value)resetReqForm();
     window.scrollTo(0,0);
+
+    // Фоновое обновление данных с сервера (синхронизация между устройствами)
+    if(['dashboard','reports','requests','users'].includes(page))silentRefresh(page);
+}
+
+function renderCurrentPage(page){
+    if(page==='dashboard')renderDashboard();
+    if(page==='reports')renderReportsPage();
+    if(page==='requests')renderRequestsPage();
+    if(page==='users')renderUsersPage();
+}
+
+async function silentRefresh(page){
+    if(!sb)return;
+    try{
+        await fetchAll();
+        buildNav();
+        const a=document.activeElement;
+        const typing=a&&['INPUT','TEXTAREA','SELECT'].includes(a.tagName);
+        if(currentPage===page&&!typing)renderCurrentPage(page);
+    }catch(e){/* молча: сеть или RLS */}
+}
+
+function subscribeRealtime(){
+    if(realtimeSubscribed||!sb)return;
+    realtimeSubscribed=true;
+    try{
+        sb.channel('db-changes')
+            .on('postgres_changes',{event:'*',schema:'public',table:'reports'},queueRefresh)
+            .on('postgres_changes',{event:'*',schema:'public',table:'requests'},queueRefresh)
+            .on('postgres_changes',{event:'*',schema:'public',table:'profiles'},queueRefresh)
+            .subscribe();
+    }catch(e){realtimeSubscribed=false}
+}
+
+function queueRefresh(){
+    clearTimeout(refreshTimer);
+    refreshTimer=setTimeout(()=>{silentRefresh(currentPage)},800);
 }
 
 // ========================================================
@@ -629,14 +749,12 @@ function renderDashboard(){
     const allObjects=new Set([...reports.map(r=>r.department+'|'+r.building),...requests.map(r=>r.department+'|'+r.building)]).size;
     html+=`<div class="stat-card"><div class="stat-label">Объектов</div><div class="stat-value">${allObjects}</div><div class="stat-sub">уникальных</div></div></div>`;
 
-    // Pending review section (mentor/admin)
     if(currentUser.rank!=='foreman'&&pendingReview>0){
         const pending=reports.filter(r=>r.status==='submitted').sort((a,b)=>b.createdAt-a.createdAt).slice(0,5);
         html+=`<div class="section-heading"><h2>🔍 Ожидают проверки</h2><button class="btn btn-secondary btn-sm" onclick="rptStatusFilter='submitted';navigate('reports')">Все →</button></div>`;
         html+=`<div class="reports-grid">${pending.map(r=>renderReportCard(r)).join('')}</div>`;
     }
 
-    // Active requests (not foreman)
     if(currentUser.rank!=='foreman'){
         const activeReqs=requests.filter(r=>r.status==='new'||r.status==='processing').sort((a,b)=>b.createdAt-a.createdAt).slice(0,5);
         if(activeReqs.length>0){
@@ -645,7 +763,6 @@ function renderDashboard(){
         }
     }
 
-    // My reports / recent
     const myRecent=[...myReports].sort((a,b)=>b.createdAt-a.createdAt).slice(0,5);
     html+=`<div class="section-heading" style="margin-top:24px"><h2>${currentUser.rank==='foreman'?'📋 Мои отчёты':'📋 Последние отчёты'}</h2><button class="btn btn-secondary btn-sm" onclick="navigate('reports')">Все →</button></div>`;
     if(myRecent.length===0){
@@ -664,7 +781,6 @@ function renderReportsPage(){
     const isForeman=currentUser.rank==='foreman';
     const baseReports=isForeman?reports.filter(r=>r.authorId===currentUser.id):reports;
 
-    // Status filter tabs
     let statusCounts={all:baseReports.length};
     Object.keys(RPT_STATUSES).forEach(s=>{statusCounts[s]=baseReports.filter(r=>r.status===s).length});
 
@@ -680,7 +796,6 @@ function renderReportsPage(){
     });
     html+=`</div>`;
 
-    // Filters
     const depts=[...new Set(baseReports.map(r=>r.department))].sort();
     html+=`<div class="filters-bar">
         <div class="filter-group" style="flex:1"><label class="filter-label">Поиск</label><input type="text" class="filter-input search-input" id="f-rpt-search" placeholder="По объекту, работам..." oninput="renderReportsList2()"></div>
@@ -754,6 +869,7 @@ function resetReportForm(){
     document.getElementById('report-id').value='';
     document.getElementById('r-date').value=new Date().toISOString().split('T')[0];
     currentMediaFiles=[];
+    originalMediaPaths=[];
     renderMediaPreview();
     updateAllDatalists();
 }
@@ -777,37 +893,68 @@ function saveReportDraft(){
     submitReport('draft');
 }
 
-function submitReport(status){
+async function submitReport(status){
+    if(!sb)return;
     const id=document.getElementById('report-id').value;
-    const rpt={
-        id:id||genId(),
+
+    // 1. Загружаем новые файлы в Supabase Storage
+    const uploaded=[];
+    for(const m of currentMediaFiles){
+        if(m.data&&!m.url){
+            try{
+                const blob=dataUrlToBlob(m.data,m.type);
+                const path=currentUser.id+'/'+genId()+'-'+(m.name||'file').replace(/[^a-zA-Z0-9_.-]/g,'_');
+                const {error}=await sb.storage.from('media').upload(path,blob,{contentType:m.type});
+                if(error)throw error;
+                const {data:{publicUrl}}=sb.storage.from('media').getPublicUrl(path);
+                uploaded.push({id:genId(),name:m.name,type:m.type,size:m.size,url:publicUrl,path});
+            }catch(e){showToast('Не удалось загрузить файл "'+(m.name||'')+'": '+e.message,'error');return}
+        } else {
+            uploaded.push({id:m.id||genId(),name:m.name,type:m.type,size:m.size||0,url:m.url,path:m.path});
+        }
+    }
+
+    // 2. История согласования
+    const existing=id?reports.find(r=>r.id===id):null;
+    const hist=[...((existing&&existing.reviewHistory)||[])];
+    if(status==='submitted')hist.push({action:id?'resubmitted':'submitted',by:currentUser.id,at:Date.now(),comment:''});
+
+    // 3. Запись в базу
+    const row={
         date:document.getElementById('r-date').value,
         department:document.getElementById('r-dept').value.trim(),
         building:document.getElementById('r-bldg').value.trim(),
-        workshop:document.getElementById('r-ws').value.trim(),
-        workType:document.getElementById('r-wt').value.trim(),
+        workshop:document.getElementById('r-ws').value.trim()||null,
+        work_type:document.getElementById('r-wt').value.trim(),
         volume:document.getElementById('r-vol').value.trim(),
-        foreman:getUserName(currentUser.id),
-        authorId:currentUser.id,
-        media:[...currentMediaFiles],
+        author_id:currentUser.id,
         status:status,
-        createdAt:id?(reports.find(r=>r.id===id)?.createdAt||Date.now()):Date.now(),
-        updatedAt:Date.now(),
-        reviewHistory:id?(reports.find(r=>r.id===id)?.reviewHistory||[]):[]
+        media:uploaded,
+        review_history:hist,
+        updated_at:new Date().toISOString()
     };
 
-    if(status==='submitted'){
-        rpt.reviewHistory.push({action:'submitted',by:currentUser.id,at:Date.now(),comment:''});
-    }
-
+    let saved,err;
     if(id){
-        const idx=reports.findIndex(r=>r.id===id);
-        if(idx!==-1){rpt.reviewHistory=reports[idx].reviewHistory||[];if(status==='submitted')rpt.reviewHistory.push({action:'resubmitted',by:currentUser.id,at:Date.now(),comment:''});reports[idx]=rpt}
+        const res=await sb.from('reports').update(row).eq('id',id).select().single();
+        saved=res.data;err=res.error;
     } else {
-        reports.push(rpt);
+        const res=await sb.from('reports').insert(row).select().single();
+        saved=res.data;err=res.error;
+    }
+    if(err){showToast('Ошибка сохранения: '+err.message,'error');return}
+
+    // 4. Удаляем из хранилища файлы, убранные при редактировании
+    if(id){
+        const keep=new Set(uploaded.filter(m=>m.path).map(m=>m.path));
+        const orphans=originalMediaPaths.filter(p=>!keep.has(p));
+        if(orphans.length)sb.storage.from('media').remove(orphans).catch(()=>{});
     }
 
-    saveReports();
+    const mapped=rowToReport(saved);
+    const i=reports.findIndex(r=>r.id===mapped.id);
+    if(i!==-1)reports[i]=mapped; else reports.unshift(mapped);
+
     showToast(status==='draft'?'Черновик сохранён ✓':'Отчёт отправлен на проверку ✓','success');
     navigate('reports');
 }
@@ -847,7 +994,6 @@ function viewReport(id){
         </div>
     </div>`;
 
-    // Approval box for mentor/admin
     if(isMentorOrAdmin&&r.status==='submitted'){
         html+=`<div class="approval-box">
             <h3>🔍 Проверка отчёта</h3>
@@ -859,7 +1005,6 @@ function viewReport(id){
         </div>`;
     }
 
-    // Returned notice for foreman
     if(isAuthor&&isForeman&&r.status==='returned'){
         const lastReturn=[...(r.reviewHistory||[])].reverse().find(h=>h.action==='returned');
         html+=`<div class="approval-box" style="border-color:var(--danger-light)">
@@ -869,10 +1014,8 @@ function viewReport(id){
         </div>`;
     }
 
-    // Volume
     html+=`<div class="detail-volume-block"><div class="detail-volume-label">📝 Объём работ</div><div class="detail-volume-text">${esc(r.volume)}</div></div>`;
 
-    // Review timeline
     if(r.reviewHistory&&r.reviewHistory.length>0){
         html+=`<div class="detail-media-section"><div class="detail-section-title">📊 История согласования</div><div class="timeline">`;
         r.reviewHistory.forEach(h=>{
@@ -883,29 +1026,30 @@ function viewReport(id){
         html+=`</div></div>`;
     }
 
-    // Related requests
     const relReqs=requests.filter(q=>q.department===r.department&&q.building===r.building).sort((a,b)=>b.date.localeCompare(a.date));
     if(relReqs.length>0){
         html+=`<div class="detail-media-section"><div class="detail-section-title">📦 Заявки по объекту</div><div style="display:flex;flex-direction:column;gap:6px">${relReqs.slice(0,5).map(q=>{const qs=REQ_STATUSES[q.status]||REQ_STATUSES.new;return`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--bg);border-radius:var(--radius-sm);cursor:pointer" onclick="viewReq('${q.id}')"><span style="font-size:14px">📦 ${q.items?.length||0} материалов • ${formatDate(q.date)}</span><span class="status-badge ${qs.class}"><span class="status-dot"></span>${qs.name}</span></div>`}).join('')}</div></div>`;
     }
 
-    // Media
-    if(photos.length>0){html+=`<div class="detail-media-section"><div class="detail-section-title">📷 Фото (${photos.length})</div><div class="detail-media-grid">${photos.map(p=>`<div class="detail-media-item" onclick="openLb('${p.data}','image')"><img src="${p.data}" loading="lazy"></div>`).join('')}</div></div>`}
-    if(videos.length>0){html+=`<div class="detail-media-section"><div class="detail-section-title">🎥 Видео (${videos.length})</div><div class="detail-media-grid">${videos.map(v=>`<div class="detail-media-item" onclick="openLb('${v.data}','video')"><video src="${v.data}" muted loading="lazy"></video></div>`).join('')}</div></div>`}
+    if(photos.length>0){html+=`<div class="detail-media-section"><div class="detail-section-title">📷 Фото (${photos.length})</div><div class="detail-media-grid">${photos.map(p=>`<div class="detail-media-item" onclick="openLb('${p.url}','image')"><img src="${p.url}" loading="lazy"></div>`).join('')}</div></div>`}
+    if(videos.length>0){html+=`<div class="detail-media-section"><div class="detail-section-title">🎥 Видео (${videos.length})</div><div class="detail-media-grid">${videos.map(v=>`<div class="detail-media-item" onclick="openLb('${v.url}','video')"><video src="${v.url}" muted loading="lazy"></video></div>`).join('')}</div></div>`}
 
     document.getElementById('rd-content').innerHTML=html;
     navigate('report-detail');
 }
 
-function reviewReport(id,newStatus){
+async function reviewReport(id,newStatus){
+    if(!sb)return;
     const r=reports.find(x=>x.id===id);
     if(!r)return;
     const comment=document.getElementById('review-comment')?.value?.trim()||'';
-    r.status=newStatus;
-    r.updatedAt=Date.now();
-    r.reviewHistory=r.reviewHistory||[];
-    r.reviewHistory.push({action:newStatus,by:currentUser.id,at:Date.now(),comment});
-    saveReports();
+    const hist=[...(r.reviewHistory||[])];
+    hist.push({action:newStatus,by:currentUser.id,at:Date.now(),comment});
+    const {data,error}=await sb.from('reports').update({status:newStatus,review_history:hist,updated_at:new Date().toISOString()}).eq('id',id).select().single();
+    if(error){showToast('Ошибка: '+error.message,'error');return}
+    const mapped=rowToReport(data);
+    const i=reports.findIndex(x=>x.id===id);
+    if(i!==-1)reports[i]=mapped;
     showToast(newStatus==='approved'?'Отчёт утверждён ✓':'Отчёт возвращён ↩️','success');
     viewReport(id);
 }
@@ -920,14 +1064,25 @@ function editReport(id){
     document.getElementById('r-ws').value=r.workshop||'';
     document.getElementById('r-wt').value=r.workType;
     document.getElementById('r-vol').value=r.volume;
-    currentMediaFiles=[...(r.media||[])];
+    currentMediaFiles=[...(r.media||[])].map(m=>({...m}));
+    originalMediaPaths=currentMediaFiles.filter(m=>m.path).map(m=>m.path);
     renderMediaPreview();
     updateAllDatalists();
     navigate('new-report');
 }
 
 function deleteReport(id){
-    showConfirm('Удалить отчёт?','Это действие необратимо.',yes=>{if(yes){reports=reports.filter(r=>r.id!==id);saveReports();showToast('Удалён','success');navigate('reports')}});
+    showConfirm('Удалить отчёт?','Это действие необратимо.',async yes=>{
+        if(!yes)return;
+        const r=reports.find(x=>x.id===id);
+        const paths=((r&&r.media)||[]).filter(m=>m.path).map(m=>m.path);
+        const {error}=await sb.from('reports').delete().eq('id',id);
+        if(error){showToast('Ошибка: '+error.message,'error');return}
+        if(paths.length)sb.storage.from('media').remove(paths).catch(()=>{});
+        reports=reports.filter(x=>x.id!==id);
+        showToast('Удалён','success');
+        navigate('reports');
+    });
 }
 
 // ========================================================
@@ -1027,9 +1182,9 @@ function renderReqItems(){
     dl.innerHTML=allMats.map(m=>`<option value="${esc(m)}">`).join('');
 }
 
-function saveRequest(e){
+async function saveRequest(e){
     e.preventDefault();
-    // Sync from DOM
+    if(!sb)return;
     document.querySelectorAll('#rq-items-body tr').forEach((row,i)=>{
         if(currentReqItems[i]){const inputs=row.querySelectorAll('input,select');currentReqItems[i].name=inputs[0]?.value||'';currentReqItems[i].unit=inputs[1]?.value||'';currentReqItems[i].qty=inputs[2]?.value||'';currentReqItems[i].note=inputs[3]?.value||''}
     });
@@ -1037,9 +1192,32 @@ function saveRequest(e){
     if(validItems.length===0){showToast('Добавьте хотя бы один материал','error');return}
     const id=document.getElementById('req-id').value;
     const existing=id?requests.find(r=>r.id===id):null;
-    const rq={id:id||genId(),date:document.getElementById('rq-date').value,deliveryDate:document.getElementById('rq-ddate').value||'',department:document.getElementById('rq-dept').value.trim(),building:document.getElementById('rq-bldg').value.trim(),workshop:document.getElementById('rq-ws').value.trim(),foreman:getUserName(currentUser.id),authorId:currentUser.id,comment:document.getElementById('rq-comment').value.trim(),items:validItems.map(i=>({name:i.name.trim(),unit:i.unit,qty:i.qty,note:i.note.trim()})),status:existing?.status||'new',createdAt:existing?.createdAt||Date.now(),updatedAt:Date.now(),processedAt:existing?.processedAt||null,deliveredAt:existing?.deliveredAt||null};
-    if(id){const idx=requests.findIndex(r=>r.id===id);if(idx!==-1)requests[idx]=rq}else{requests.push(rq)}
-    saveRequests();showToast(id?'Заявка обновлена ✓':'Заявка создана ✓','success');navigate('requests');
+    const row={
+        date:document.getElementById('rq-date').value,
+        delivery_date:document.getElementById('rq-ddate').value||null,
+        department:document.getElementById('rq-dept').value.trim(),
+        building:document.getElementById('rq-bldg').value.trim(),
+        workshop:document.getElementById('rq-ws').value.trim()||null,
+        author_id:currentUser.id,
+        comment:document.getElementById('rq-comment').value.trim()||null,
+        items:validItems.map(i=>({name:i.name.trim(),unit:i.unit,qty:i.qty,note:i.note.trim()})),
+        status:existing?existing.status:'new',
+        updated_at:new Date().toISOString()
+    };
+    let saved,err;
+    if(id){
+        const res=await sb.from('requests').update(row).eq('id',id).select().single();
+        saved=res.data;err=res.error;
+    } else {
+        const res=await sb.from('requests').insert(row).select().single();
+        saved=res.data;err=res.error;
+    }
+    if(err){showToast('Ошибка сохранения: '+err.message,'error');return}
+    const mapped=rowToRequest(saved);
+    const i=requests.findIndex(r=>r.id===mapped.id);
+    if(i!==-1)requests[i]=mapped; else requests.unshift(mapped);
+    showToast(id?'Заявка обновлена ✓':'Заявка создана ✓','success');
+    navigate('requests');
 }
 
 // ========================================================
@@ -1067,7 +1245,6 @@ function viewReq(id){
         </div>
     </div>`;
 
-    // Status actions
     if(isNotForeman){
         html+=`<div class="approval-box"><h3>⚡ Управление статусом</h3><div class="approval-actions">`;
         if(r.status==='new')html+=`<button class="btn btn-warning btn-sm" onclick="changeReqStatus('${r.id}','processing')">🔄 Взять в обработку</button><button class="btn btn-danger btn-sm" onclick="changeReqStatus('${r.id}','rejected')">❌ Отклонить</button>`;
@@ -1076,7 +1253,6 @@ function viewReq(id){
         html+=`</div></div>`;
     }
 
-    // Materials table
     if(r.items&&r.items.length>0){
         html+=`<div class="detail-media-section"><div class="detail-section-title">📦 Ведомость материалов (${r.items.length} поз.)</div><div style="overflow-x:auto"><table class="materials-detail-table"><thead><tr><th>№</th><th>Наименование</th><th>Ед.изм.</th><th>Кол-во</th><th>Примечание</th></tr></thead><tbody>${r.items.map((it,i)=>`<tr><td>${i+1}</td><td><strong>${esc(it.name)}</strong></td><td>${esc(it.unit)||'—'}</td><td><strong>${esc(it.qty)}</strong></td><td>${esc(it.note)||'—'}</td></tr>`).join('')}</tbody></table></div></div>`;
     }
@@ -1086,12 +1262,17 @@ function viewReq(id){
     navigate('request-detail');
 }
 
-function changeReqStatus(id,newStatus){
-    const r=requests.find(x=>x.id===id);if(!r)return;
-    r.status=newStatus;r.updatedAt=Date.now();
-    if(newStatus==='processing')r.processedAt=Date.now();
-    if(newStatus==='delivered'){r.deliveredAt=Date.now();if(!r.processedAt)r.processedAt=Date.now()}
-    saveRequests();
+async function changeReqStatus(id,newStatus){
+    if(!sb)return;
+    const cur=requests.find(x=>x.id===id);
+    const upd={status:newStatus,updated_at:new Date().toISOString()};
+    if(newStatus==='processing')upd.processed_at=new Date().toISOString();
+    if(newStatus==='delivered'){upd.delivered_at=new Date().toISOString();if(!cur||!cur.processedAt)upd.processed_at=new Date().toISOString()}
+    const {data,error}=await sb.from('requests').update(upd).eq('id',id).select().single();
+    if(error){showToast('Ошибка: '+error.message,'error');return}
+    const mapped=rowToRequest(data);
+    const i=requests.findIndex(x=>x.id===id);
+    if(i!==-1)requests[i]=mapped;
     const labels={processing:'Взята в обработку ✓',delivered:'Доставлено ✓',rejected:'Отклонена',new:'Возвращена в новые'};
     showToast(labels[newStatus]||'Обновлено','success');
     viewReq(id);
@@ -1111,26 +1292,45 @@ function editReq(id){
     renderReqItems();updateAllDatalists();navigate('new-request');
 }
 
-function deleteReq(id){showConfirm('Удалить заявку?','Необратимо.',yes=>{if(yes){requests=requests.filter(r=>r.id!==id);saveRequests();showToast('Удалена','success');navigate('requests')}})}
+function deleteReq(id){
+    showConfirm('Удалить заявку?','Необратимо.',async yes=>{
+        if(!yes)return;
+        const {error}=await sb.from('requests').delete().eq('id',id);
+        if(error){showToast('Ошибка: '+error.message,'error');return}
+        requests=requests.filter(r=>r.id!==id);
+        showToast('Удалена','success');
+        navigate('requests');
+    });
+}
 
 // ========================================================
 // USERS (Admin)
 // ========================================================
+async function callAdminFn(action,payload){
+    const {data,error}=await sb.functions.invoke('admin-users',{body:{action,payload}});
+    if(error){
+        let msg=error.message;
+        try{const j=await error.context.json();if(j&&j.error)msg=j.error}catch(_){}
+        throw new Error(msg);
+    }
+    if(data&&data.error)throw new Error(data.error);
+    return data;
+}
+
 function renderUsersPage(){
     if(currentUser.rank!=='admin'){navigate('dashboard');return}
 
     let html=`<div class="section-heading"><h2>👥 Управление пользователями</h2><button class="btn btn-primary btn-sm" onclick="showCreateUser()">➕ Создать аккаунт</button></div>`;
 
-    // Create user form (hidden by default)
     html+=`<div id="create-user-form" style="display:none;margin-bottom:20px">
         <div class="form-card">
             <div class="form-card-title"><span class="icon">👤</span>Новый аккаунт</div>
             <div class="form-row">
                 <div class="form-group"><label class="form-label">ФИО <span class="req">*</span></label><input type="text" class="form-control" id="nu-name" placeholder="ФИО сотрудника"></div>
-                <div class="form-group"><label class="form-label">Логин <span class="req">*</span></label><input type="text" class="form-control" id="nu-login" placeholder="Логин"></div>
+                <div class="form-group"><label class="form-label">Логин <span class="req">*</span></label><input type="text" class="form-control" id="nu-login" placeholder="Только a-z, 0-9, . _ -"></div>
             </div>
             <div class="form-row">
-                <div class="form-group"><label class="form-label">Пароль <span class="req">*</span></label><input type="password" class="form-control" id="nu-pass" placeholder="Минимум 4 символа"></div>
+                <div class="form-group"><label class="form-label">Пароль <span class="req">*</span></label><input type="password" class="form-control" id="nu-pass" placeholder="Минимум 6 символов"></div>
                 <div class="form-group"><label class="form-label">Ранг <span class="req">*</span></label><select class="form-control" id="nu-rank" onchange="toggleMentorSelect()"><option value="foreman">👷 Прораб</option><option value="mentor">⭐ Наставник</option><option value="admin">👑 Администратор</option></select></div>
             </div>
             <div class="form-row single" id="mentor-select-row" style="display:none">
@@ -1143,7 +1343,6 @@ function renderUsersPage(){
         </div>
     </div>`;
 
-    // Users table
     html+=`<div class="card"><table class="admin-table"><thead><tr><th>Пользователь</th><th>Логин</th><th>Ранг</th><th>Наставник</th><th>Действия</th></tr></thead><tbody>`;
 
     users.forEach(u=>{
@@ -1161,7 +1360,6 @@ function renderUsersPage(){
 
     html+=`</tbody></table></div>`;
 
-    // Hierarchy visualization
     html+=`<div class="form-card" style="margin-top:24px"><div class="form-card-title"><span class="icon">🏛</span>Иерархия</div>`;
     const admins=users.filter(u=>u.rank==='admin');
     const mentors=users.filter(u=>u.rank==='mentor');
@@ -1217,28 +1415,34 @@ function updateMentorSelect(){
     document.getElementById('nu-mentor').innerHTML=`<option value="">— Не назначен —</option>`+mentors.map(m=>`<option value="${m.id}">${esc(m.name)}</option>`).join('');
 }
 
-function createUser(){
+async function createUser(){
     const name=document.getElementById('nu-name').value.trim();
     const login=document.getElementById('nu-login').value.trim().toLowerCase();
     const pass=document.getElementById('nu-pass').value;
     const rank=document.getElementById('nu-rank').value;
     const mentorId=rank==='foreman'?document.getElementById('nu-mentor').value:'';
 
-    if(!name||!login||pass.length<4){showToast('Заполните все поля. Пароль мин. 4 символа','error');return}
+    if(!name||!/^[a-z0-9._-]{3,}$/.test(login)||pass.length<6){showToast('Заполните все поля. Логин: мин. 3 символа (a-z, 0-9, . _ -), пароль мин. 6','error');return}
     if(users.find(u=>u.login===login)){showToast('Логин уже занят','error');return}
 
-    users.push({id:genId(),name,login,password:hashPass(pass),rank,mentorId:mentorId||null,createdAt:Date.now()});
-    saveUsers();
-    showToast(`Аккаунт "${name}" создан ✓`,'success');
-    renderUsersPage();
-    buildNav();
+    try{
+        await callAdminFn('create',{name,login,password:pass,rank,mentorId:mentorId||null});
+        await fetchAll();
+        showToast(`Аккаунт "${name}" создан ✓`,'success');
+        renderUsersPage();
+        buildNav();
+    }catch(e){showToast('Ошибка: '+e.message,'error')}
 }
 
-function changeRank(userId,newRank){
+async function changeRank(userId,newRank){
     const u=users.find(x=>x.id===userId);if(!u)return;
-    u.rank=newRank;
-    if(newRank!=='foreman')u.mentorId=null;
-    saveUsers();showToast(`Ранг ${u.name} изменён на "${RANKS[newRank].name}"`,'success');
+    const upd={rank:newRank};
+    if(newRank!=='foreman')upd.mentor_id=null;
+    const prev={rank:u.rank,mentorId:u.mentorId};
+    const {error}=await sb.from('profiles').update(upd).eq('id',userId);
+    if(error){showToast('Ошибка: '+error.message,'error');renderUsersPage();return}
+    u.rank=newRank;if(newRank!=='foreman')u.mentorId=null;
+    showToast(`Ранг ${u.name} изменён на "${RANKS[newRank].name}"`,'success');
     renderUsersPage();buildNav();
 }
 
@@ -1246,26 +1450,43 @@ function showChangeMentor(userId){
     const u=users.find(x=>x.id===userId);if(!u)return;
     const mentors=users.filter(m=>m.rank==='mentor');
     const current=u.mentorId||'';
-    const opts=mentors.map(m=>`<option value="${m.id}" ${m.id===current?'selected':''}>${esc(m.name)}</option>`).join('');
     const newMentor=prompt(`Выберите наставника для ${u.name}:\n\nВведите номер:\n${mentors.map((m,i)=>`${i+1}. ${m.name}`).join('\n')}\n\n0 — без наставника`);
     if(newMentor===null)return;
     const idx=parseInt(newMentor);
-    if(idx===0){u.mentorId=null;saveUsers();showToast('Наставник снят','success');renderUsersPage()}
-    else if(idx>0&&idx<=mentors.length){u.mentorId=mentors[idx-1].id;saveUsers();showToast('Наставник назначен ✓','success');renderUsersPage()}
+    (async()=>{
+        let target=null;
+        if(idx===0){target=null}
+        else if(idx>0&&idx<=mentors.length){target=mentors[idx-1].id}
+        else return;
+        if(target===current)return;
+        const {error}=await sb.from('profiles').update({mentor_id:target}).eq('id',userId);
+        if(error){showToast('Ошибка: '+error.message,'error');return}
+        u.mentorId=target;
+        showToast(target?'Наставник назначен ✓':'Наставник снят','success');
+        renderUsersPage();
+    })();
 }
 
-function resetPassword(userId){
+async function resetPassword(userId){
     const u=users.find(x=>x.id===userId);if(!u)return;
-    const newPass=prompt(`Новый пароль для «${u.name}» (мин. 4 символа):`);
-    if(!newPass||newPass.length<4){showToast('Пароль мин. 4 символа','error');return}
-    u.password=hashPass(newPass);
-    saveUsers();showToast('Пароль изменён ✓','success');
+    const newPass=prompt(`Новый пароль для «${u.name}» (мин. 6 символов):`);
+    if(!newPass||newPass.length<6){showToast('Пароль мин. 6 символов','error');return}
+    try{
+        await callAdminFn('reset',{userId,password:newPass});
+        showToast('Пароль изменён ✓','success');
+    }catch(e){showToast('Ошибка: '+e.message,'error')}
 }
 
 function deleteUser(userId){
     const u=users.find(x=>x.id===userId);if(!u)return;
-    showConfirm(`Удалить пользователя "${u.name}"?`,`Все данные сохранятся, но пользователь потеряет доступ.`,yes=>{
-        if(yes){users=users.filter(x=>x.id!==userId);saveUsers();showToast('Пользователь удалён','success');renderUsersPage();buildNav()}
+    showConfirm(`Удалить пользователя "${u.name}"?`,`Его отчёты и заявки сохранятся, но пользователь потеряет доступ.`,async yes=>{
+        if(!yes)return;
+        try{
+            await callAdminFn('remove',{userId});
+            users=users.filter(x=>x.id!==userId);
+            showToast('Пользователь удалён','success');
+            renderUsersPage();buildNav();
+        }catch(e){showToast('Ошибка: '+e.message,'error')}
     });
 }
 
@@ -1283,7 +1504,10 @@ function handleFiles(files){
 }
 
 function renderMediaPreview(){
-    document.getElementById('media-preview').innerHTML=currentMediaFiles.map((m,i)=>`<div class="media-preview-item">${m.type.startsWith('image')?`<img src="${m.data}">`:`<video src="${m.data}" muted></video>`}<button class="remove-btn" onclick="event.stopPropagation();currentMediaFiles.splice(${i},1);renderMediaPreview()">✕</button><span class="media-type-badge">${m.type.startsWith('image')?'📷':'🎥'}</span></div>`).join('');
+    document.getElementById('media-preview').innerHTML=currentMediaFiles.map((m,i)=>{
+        const src=m.data||m.url||'';
+        return `<div class="media-preview-item">${m.type.startsWith('image')?`<img src="${src}">`:`<video src="${src}" muted></video>`}<button class="remove-btn" onclick="event.stopPropagation();currentMediaFiles.splice(${i},1);renderMediaPreview()">✕</button><span class="media-type-badge">${m.type.startsWith('image')?'📷':'🎥'}</span></div>`;
+    }).join('');
 }
 
 // Drag & drop
@@ -1309,9 +1533,9 @@ function showToast(msg,type=''){const c=document.getElementById('toast-container
 // HELPERS
 // ========================================================
 function getUserName(id){const u=users.find(x=>x.id===id);return u?u.name:'Неизвестно'}
-function formatDate(d){if(!d)return'';const[y,m,day]=d.split('-');const months=['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];return`${parseInt(day)} ${months[parseInt(m)-1]} ${y}`}
+function formatDate(d){if(!d)return'';const[y,m,day]=String(d).split('-');const months=['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];return`${parseInt(day)} ${months[parseInt(m)-1]} ${y}`}
 function formatDT(ts){if(!ts)return'';const d=new Date(ts);return formatDate(d.toISOString().split('T')[0])+', '+d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0')}
-function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+function esc(s){if(s===null||s===undefined)return'';const d=document.createElement('div');d.textContent=String(s);return d.innerHTML}
 function truncate(s,n){if(!s||s.length<=n)return s;return s.substring(0,n)+'...'}
 
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeLightbox();closeConfirm(false)}});
@@ -1321,7 +1545,8 @@ document.getElementById('login-password')?.addEventListener('keydown',e=>{if(e.k
 document.getElementById('login-username')?.addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('login-password').focus()});
 
 // Init
-initAuth();
-</script>
+initApp();
+
+
 <script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a1bc31cf896ba14c',t:'MTc4NDE1NDQ0Nw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
