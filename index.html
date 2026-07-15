@@ -329,7 +329,7 @@
             </div>
             <button class="login-btn login-btn-primary" onclick="doLogin()">Войти</button>
         </div>
-        <div style="margin-top:18px">
+        <div style="margin-top:18px;display:none" id="bootstrap-toggle-wrap">
             <button type="button" class="btn btn-secondary btn-sm" onclick="toggleBootstrap()">⚙️ Первый запуск: создать администратора</button>
         </div>
         <div id="bootstrap-form" style="display:none;margin-top:14px;text-align:left">
@@ -338,7 +338,6 @@
             <div class="form-group"><label class="form-label">Пароль</label><input type="password" class="form-control" id="bs-pass" placeholder="Минимум 6 символов"></div>
             <button type="button" class="login-btn login-btn-primary" onclick="bootstrapAdmin()">Создать и войти</button>
         </div>
-        <div style="margin-top:12px"><a href="javascript:void(0)" onclick="showSetupPanel()" style="font-size:12px;color:var(--text-secondary)">⚙️ Настройка подключения к Supabase</a></div>
 
     </div>
 </div>
@@ -500,15 +499,16 @@
 // 3) Вставьте сюда Project URL и anon public key
 //    (Dashboard → Project Settings → API)
 // ========================================================
-const SUPABASE_URL='https://PROJECT_REF.supabase.co';
-const SUPABASE_ANON_KEY='PASTE_ANON_KEY_HERE';
+const SUPABASE_URL='https://ujtoklyynaxhxejjxmbq.supabase.co';
+const SUPABASE_ANON_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVqdG9rbHl5bmF4aHhlamp4bWJxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxNDUwMTYsImV4cCI6MjA5OTcyMTAxNn0.P9J2dRLTrbe1Ib-iO8vqo6GMqGWdm8CAyyy1KqPX4Nk';
 // Псевдо-домен для внутренних email-аккаунтов (логин "admin" -> admin@so.app)
 const AUTH_DOMAIN='so.app';
 
 // Конфиг: 1) сохранённый через форму на странице входа, 2) константы выше
 function getSbConfig(){
-    try{const c=JSON.parse(localStorage.getItem('so_sb_cfg')||'null');if(c&&c.url&&c.key)return{url:String(c.url).trim(),key:String(c.key).trim()}}catch(e){}
+    // Приоритет — ключи, прошитые в файле: все пользователи работают с одной базой
     if(!SUPABASE_URL.includes('PROJECT_REF')&&!SUPABASE_ANON_KEY.includes('PASTE'))return{url:SUPABASE_URL.trim(),key:SUPABASE_ANON_KEY.trim()};
+    try{const c=JSON.parse(localStorage.getItem('so_sb_cfg')||'null');if(c&&c.url&&c.key)return{url:String(c.url).trim(),key:String(c.key).trim()}}catch(e){}
     return null;
 }
 const SB_CFG=getSbConfig();
@@ -591,6 +591,14 @@ async function initApp(){
         if(prof){currentUser=rowToProfile(prof);await enterApp();return}
         await sb.auth.signOut();
     }
+    // Кнопку "Первый запуск" показываем только пока в базе пусто (ни одного профиля)
+    try{
+        const res=await sb.rpc('profiles_count');
+        if(Number(res.data)===0){
+            const w=document.getElementById('bootstrap-toggle-wrap');
+            if(w)w.style.display='block';
+        }
+    }catch(e){}
     document.getElementById('login-page').style.display='flex';
     document.getElementById('app-page').style.display='none';
 }
@@ -639,6 +647,7 @@ async function bootstrapAdmin(){
         return;
     }
     currentUser={id:uid,name,login,rank:'admin',mentorId:null,createdAt:Date.now()};
+    const bw=document.getElementById('bootstrap-toggle-wrap');if(bw)bw.style.display='none';
     showToast('Администратор создан ✓','success');
     await enterApp();
 }
@@ -1578,5 +1587,5 @@ document.getElementById('login-username')?.addEventListener('keydown',e=>{if(e.k
 initApp();
 
 
-</script><script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a1bc8ebb1b7e14d3',t:'MTc4NDE1ODI1Mw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</script><script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a1bc97f1ca6d4673',t:'MTc4NDE1ODYzMA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
