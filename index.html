@@ -310,7 +310,13 @@
         <div class="login-logo">🏗</div>
         <div class="login-title">СтройОтчёт</div>
         <div class="login-subtitle">Войдите в систему для работы</div>
-        <div id="config-warning" style="display:none;background:var(--warning-light);color:#92400e;font-size:13px;padding:10px 14px;border-radius:8px;margin-bottom:16px;text-align:left">⚠️ Подключение к Supabase не настроено. Откройте файл в редакторе и укажите <b>SUPABASE_URL</b> и <b>SUPABASE_ANON_KEY</b> в начале скрипта (см. README-SUPABASE.md).</div>
+        <div id="config-warning" style="display:none;text-align:left;background:var(--warning-light);padding:14px 16px;border-radius:10px;margin-bottom:18px">
+            <div style="font-size:14px;font-weight:700;color:#92400e;margin-bottom:6px">⚠️ Подключение к Supabase</div>
+            <div id="config-warning-text" style="font-size:12px;color:#92400e;margin-bottom:10px">Вставьте данные проекта (Supabase → Project Settings → API). Они сохранятся в этом браузере.</div>
+            <div class="form-group"><label class="form-label">Project URL</label><input type="text" class="form-control" id="cfg-url" placeholder="https://abcdefgh.supabase.co" style="font-size:14px"></div>
+            <div class="form-group" style="margin-top:8px"><label class="form-label">anon public key</label><input type="text" class="form-control" id="cfg-key" placeholder="eyJhbGciOi..." style="font-size:14px"></div>
+            <button type="button" class="login-btn login-btn-primary" onclick="saveSetup()" style="margin-top:12px">💾 Сохранить и подключиться</button>
+        </div>
         <div class="login-error" id="login-error"></div>
         <div class="login-form">
             <div class="form-group">
@@ -332,6 +338,7 @@
             <div class="form-group"><label class="form-label">Пароль</label><input type="password" class="form-control" id="bs-pass" placeholder="Минимум 6 символов"></div>
             <button type="button" class="login-btn login-btn-primary" onclick="bootstrapAdmin()">Создать и войти</button>
         </div>
+        <div style="margin-top:12px"><a href="javascript:void(0)" onclick="showSetupPanel()" style="font-size:12px;color:var(--text-secondary)">⚙️ Настройка подключения к Supabase</a></div>
 
     </div>
 </div>
@@ -493,14 +500,39 @@
 // 3) Вставьте сюда Project URL и anon public key
 //    (Dashboard → Project Settings → API)
 // ========================================================
-const SUPABASE_URL='https://ujtoklyynaxhxejjxmbq.supabase.co/rest/v1/';
-const SUPABASE_ANON_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVqdG9rbHl5bmF4aHhlamp4bWJxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxNDUwMTYsImV4cCI6MjA5OTcyMTAxNn0.P9J2dRLTrbe1Ib-iO8vqo6GMqGWdm8CAyyy1KqPX4Nk';
+const SUPABASE_URL='https://PROJECT_REF.supabase.co';
+const SUPABASE_ANON_KEY='PASTE_ANON_KEY_HERE';
 // Псевдо-домен для внутренних email-аккаунтов (логин "admin" -> admin@so.app)
 const AUTH_DOMAIN='so.app';
 
-const SUPABASE_OK=!SUPABASE_URL.includes('PROJECT_REF')&&!SUPABASE_ANON_KEY.includes('PASTE');
-let sb=null;
-if(SUPABASE_OK&&window.supabase)sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY);
+// Конфиг: 1) сохранённый через форму на странице входа, 2) константы выше
+function getSbConfig(){
+    try{const c=JSON.parse(localStorage.getItem('so_sb_cfg')||'null');if(c&&c.url&&c.key)return{url:String(c.url).trim(),key:String(c.key).trim()}}catch(e){}
+    if(!SUPABASE_URL.includes('PROJECT_REF')&&!SUPABASE_ANON_KEY.includes('PASTE'))return{url:SUPABASE_URL.trim(),key:SUPABASE_ANON_KEY.trim()};
+    return null;
+}
+const SB_CFG=getSbConfig();
+let sb=null, sbInitError='';
+if(SB_CFG){
+    if(!window.supabase){sbInitError='Не загрузилась библиотека supabase-js с CDN. Проверьте интернет-соединение и обновите страницу.'}
+    else{try{sb=window.supabase.createClient(SB_CFG.url,SB_CFG.key)}catch(e){sbInitError='Некорректные URL или ключ: '+e.message}}
+}
+function showSetupPanel(msg,isErr){
+    const w=document.getElementById('config-warning');
+    w.style.display='block';
+    const t=document.getElementById('config-warning-text');
+    if(msg)t.textContent=msg;
+    t.style.color=isErr?'var(--danger)':'#92400e';
+    if(SB_CFG){document.getElementById('cfg-url').value=SB_CFG.url;document.getElementById('cfg-key').value=SB_CFG.key}
+}
+function saveSetup(){
+    const url=document.getElementById('cfg-url').value.trim().replace(/\/+$/,'');
+    const key=document.getElementById('cfg-key').value.trim();
+    if(!/^https:\/\/[a-z0-9-]{3,}\.supabase\.co$/.test(url)){showSetupPanel('URL неверный. Он выглядит так: https://abcdefgh.supabase.co — смотрите Project Settings → API',true);return}
+    if(key.split('.').length!==3||key.length<80){showSetupPanel('Ключ неверный: нужен anon public (длинный, начинается с eyJ...), НЕ service_role',true);return}
+    try{localStorage.setItem('so_sb_cfg',JSON.stringify({url,key}))}catch(e){}
+    location.reload();
+}
 
 // ========================================================
 // STATE
@@ -550,10 +582,8 @@ function genId(){return Date.now().toString(36)+Math.random().toString(36).subst
 // AUTH
 // ========================================================
 async function initApp(){
-    if(!SUPABASE_OK){
-        document.getElementById('config-warning').style.display='block';
-        return;
-    }
+    if(!SB_CFG){showSetupPanel();return}
+    if(!sb){showSetupPanel(sbInitError,true);return}
     let session=null;
     try{const {data}=await sb.auth.getSession();session=data?.session||null}catch(e){}
     if(session){
@@ -566,12 +596,12 @@ async function initApp(){
 }
 
 async function doLogin(){
-    if(!sb){showLoginError('Supabase не настроен');return}
+    if(!sb){showLoginError('Подключение не настроено — нажмите «⚙️ Настройка подключения» внизу формы');return}
     const username=document.getElementById('login-username').value.trim().toLowerCase();
     const password=document.getElementById('login-password').value;
     if(!username||!password){showLoginError('Введите логин и пароль');return}
     const {data,error}=await sb.auth.signInWithPassword({email:username+'@'+AUTH_DOMAIN,password});
-    if(error){showLoginError('Неверный логин или пароль');return}
+    if(error){showLoginError(error.message==='Invalid login credentials'?'Неверный логин или пароль':'Ошибка входа: '+error.message);return}
     const {data:prof,error:pe}=await sb.from('profiles').select('*').eq('id',data.user.id).single();
     if(pe||!prof){await sb.auth.signOut();showLoginError('Профиль не найден. Обратитесь к администратору.');return}
     currentUser=rowToProfile(prof);
@@ -593,7 +623,7 @@ function showLoginError(msg){const el=document.getElementById('login-error');el.
 // Первый запуск: создание первого администратора
 function toggleBootstrap(){const f=document.getElementById('bootstrap-form');f.style.display=f.style.display==='none'?'block':'none'}
 async function bootstrapAdmin(){
-    if(!sb){showLoginError('Supabase не настроен');return}
+    if(!sb){showLoginError('Подключение не настроено — нажмите «⚙️ Настройка подключения» внизу формы');return}
     const name=document.getElementById('bs-name').value.trim();
     const login=document.getElementById('bs-login').value.trim().toLowerCase();
     const pass=document.getElementById('bs-pass').value;
@@ -1548,5 +1578,5 @@ document.getElementById('login-username')?.addEventListener('keydown',e=>{if(e.k
 initApp();
 
 
-<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a1bc31cf896ba14c',t:'MTc4NDE1NDQ0Nw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</script><script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a1bc73a70fc9655e',t:'MTc4NDE1NzE0NA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
